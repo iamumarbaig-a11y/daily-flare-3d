@@ -35,16 +35,37 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.PropertyFactory.circleColor
+import org.maplibre.android.style.layers.PropertyFactory.circleRadius
+import org.maplibre.android.style.layers.PropertyFactory.lineCap
+import org.maplibre.android.style.layers.PropertyFactory.lineColor
+import org.maplibre.android.style.layers.PropertyFactory.lineWidth
+import org.maplibre.android.style.sources.GeoJsonSource
 
 private const val MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty"
 private const val DURATION_MS = 10_000L
+private const val ROUTE_SOURCE = "animated-route-source"
+private const val ROUTE_LAYER = "animated-route-layer"
+private const val MARKER_SOURCE = "animated-marker-source"
+private const val MARKER_LAYER = "animated-marker-layer"
 
 private enum class CameraMode(val label: String) {
     TOP_DOWN("Top-down"), BOUNCE("Bounce"), FLY_TO("Fly-to"), ORBIT("Orbit"), CINEMATIC("Cinematic")
 }
+
+private val demoRoute = listOf(
+    LatLng(52.3676, 4.9041),
+    LatLng(52.2297, 5.1667),
+    LatLng(52.5200, 13.4050),
+    LatLng(52.2298, 21.0118),
+    LatLng(50.4501, 30.5234)
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,13 +84,26 @@ private fun MapStudioScreen() {
     var timelineProgress by remember { mutableFloatStateOf(0f) }
     var cameraMode by remember { mutableStateOf(CameraMode.TOP_DOWN) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
+    var routeReady by remember { mutableStateOf(false) }
 
     DisposableEffect(mapView) {
         mapView.onStart()
         mapView.onResume()
         mapView.getMapAsync { loadedMap ->
             map = loadedMap
-            loadedMap.setStyle(Style.Builder().fromUri(MAP_STYLE))
+            loadedMap.setStyle(Style.Builder().fromUri(MAP_STYLE)) { style ->
+                installRouteLayers(style)
+                routeReady = true
+                updateRouteVisuals(style, 0f)
+                loadedMap.moveCamera(
+                    CameraUpdateFactory.newCameraPosition(
+                        CameraPosition.Builder()
+                            .target(demoRoute.first())
+                            .zoom(4.0)
+                            .build()
+                    )
+                )
+            }
         }
         onDispose {
             mapView.onPause()
@@ -119,23 +153,86 @@ private fun MapStudioScreen() {
                 }
             }
 
-            Text("Timeline — 10 seconds • 60 FPS", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
+            Text("Route animation • 10 seconds • 60 FPS", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
             Slider(
                 value = timelineProgress,
                 onValueChange = {
                     timelineProgress = it
-                    map?.let { loadedMap -> applyCameraMode(loadedMap, cameraMode, it) }
+                    map?.let { loadedMap ->
+                        loadedMap.style?.let { style ->
+                            if (routeReady) updateRouteVisuals(style, it)
+                        }
+                        applyCameraMode(loadedMap, cameraMode, it)
+                    }
                 },
                 modifier = Modifier.fillMaxWidth()
             )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("0:00", style = MaterialTheme.typography.labelSmall)
-                Text("Route • Highlight • Marker", style = MaterialTheme.typography.labelSmall)
+                Text("Route • Moving marker", style = MaterialTheme.typography.labelSmall)
                 Text("0:10", style = MaterialTheme.typography.labelSmall)
             }
         }
     }
 }
+
+private fun installRouteLayers(style: Style) {
+    if (style.getSource(ROUTE_SOURCE) == null) {
+        style.addSource(GeoJsonSource(ROUTE_SOURCE, emptyLineGeoJson()))
+    }
+    if (style.getSource(MARKER_SOURCE) == null) {
+        style.addSource(GeoJsonSource(MARKER_SOURCE, pointGeoJson(demoRoute.first())))
+    }
+    if (style.getLayer(ROUTE_LAYER) == null) {
+        style.addLayer(
+            LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
+                lineColor(Color.parseColor("#E05A47")),
+                lineWidth(5f),
+                lineCap("round")
+            )
+        )
+    }
+    if (style.getLayer(MARKER_LAYER) == null) {
+        style.addLayer(
+            CircleLayer(MARKER_LAYER, MARKER_SOURCE).withProperties(
+                circleRadius(7f),
+                circleColor(Color.parseColor("#172A3A"))
+            )
+        )
+    }
+}
+
+private fun updateRouteVisuals(style: Style, progress: Float) {
+    val p = progress.coerceIn(0f, 1f)
+    val scaled = p * (demoRoute.size - 1)
+    val segment = scaled.toInt().coerceAtMost(demoRoute.size - 2)
+    val local = scaled - segment
+    val current = interpolate(demoRoute[segment], demoRoute[segment + 1], local)
+    val visible = demoRoute.take(segment + 1).toMutableList()
+    if (visible.last() != current) visible.add(current)
+
+    val routeSource = style.getSource(ROUTE_SOURCE) as? GeoJsonSource
+    val markerSource = style.getSource(MARKER_SOURCE) as? GeoJsonSource
+    routeSource?.setGeoJson(lineGeoJson(if (p == 0f) listOf(demoRoute.first()) else visible))
+    markerSource?.setGeoJson(pointGeoJson(current))
+}
+
+private fun interpolate(a: LatLng, b: LatLng, t: Double): LatLng {
+    val clamped = t.coerceIn(0.0, 1.0)
+    return LatLng(
+        a.latitude + (b.latitude - a.latitude) * clamped,
+        a.longitude + (b.longitude - a.longitude) * clamped
+    )
+}
+
+private fun lineGeoJson(points: List<LatLng>): String =
+    "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"LineString\",\"coordinates\":[" +
+        points.joinToString(",") { "[${it.longitude},${it.latitude}]" } + "]}}"
+
+private fun emptyLineGeoJson(): String = lineGeoJson(listOf(demoRoute.first(), demoRoute.first()))
+
+private fun pointGeoJson(point: LatLng): String =
+    "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Point\",\"coordinates\":[${point.longitude},${point.latitude}]}}"
 
 private fun applyCameraMode(map: MapLibreMap, mode: CameraMode, progress: Float) {
     val current = map.cameraPosition

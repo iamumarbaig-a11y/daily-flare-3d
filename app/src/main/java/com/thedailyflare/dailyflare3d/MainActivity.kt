@@ -85,7 +85,9 @@ private fun MapStudioScreen() {
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var ready by remember { mutableStateOf(false) }
     var selectedCountry by remember { mutableStateOf(countries.first()) }
-    var query by remember { mutableStateOf("") }
+    var countryQuery by remember { mutableStateOf("") }
+    var placeQuery by remember { mutableStateOf("") }
+    var selectedPlace by remember { mutableStateOf<MapPlace?>(null) }
     var highlightEnabled by remember { mutableStateOf(false) }
 
     fun loadMapStyle(loaded: MapLibreMap, mode: MapStyleMode) {
@@ -106,8 +108,10 @@ private fun MapStudioScreen() {
         onDispose { mapView.onPause(); mapView.onStop(); mapView.onDestroy() }
     }
 
-    val filtered = countries.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
+    val filteredCountries = countries.filter { countryQuery.isBlank() || it.name.contains(countryQuery.trim(), ignoreCase = true) }
+    val placeResults = if (placeQuery.isBlank()) emptyList() else searchMapPlaces(placeQuery)
     val currentMs = (progress * DURATION_MS).toLong()
+
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().height(56.dp).background(Color(0xFF172A3A)).padding(horizontal=16.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.SpaceBetween) {
             Text("Daily Flare 3D", color=Color.White, style=MaterialTheme.typography.titleLarge)
@@ -119,15 +123,30 @@ private fun MapStudioScreen() {
             Row(Modifier.fillMaxWidth().padding(top=6.dp), horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                 MapStyleMode.entries.forEach { mode -> Button({ mapStyle=mode; map?.let { loadMapStyle(it,mode) } }, Modifier.weight(1f)) { Text(mode.label) } }
             }
+            Text("Place / City Search", Modifier.padding(top=8.dp), style=MaterialTheme.typography.titleSmall)
+            OutlinedTextField(placeQuery,{placeQuery=it},Modifier.fillMaxWidth().padding(top=4.dp),singleLine=true,placeholder={Text("Search city or landmark…")})
+            if (placeResults.isNotEmpty()) {
+                Column(Modifier.fillMaxWidth().padding(top=4.dp)) {
+                    placeResults.forEach { place ->
+                        Button({ selectedPlace=place; placeQuery=place.name; map?.let { loaded -> loaded.easeCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(place.location).zoom(9.0).bearing(0.0).tilt(0.0).build()),650) } },Modifier.fillMaxWidth().padding(vertical=1.dp)) { Text("${place.name} • ${place.type}") }
+                    }
+                }
+            }
+            if (selectedPlace != null) {
+                Row(Modifier.fillMaxWidth().padding(top=4.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.SpaceBetween) {
+                    Text("Selected: ${selectedPlace!!.name}", Modifier.weight(1f))
+                    Button({ map?.let { loaded -> loaded.easeCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(selectedPlace!!.location).zoom(9.0).build()),650) } }) { Text("Fly-to") }
+                }
+            }
             Text("Camera • ${cameraMode.label}", Modifier.padding(top=8.dp), style=MaterialTheme.typography.titleSmall)
             Row(Modifier.fillMaxWidth().padding(top=6.dp), horizontalArrangement=Arrangement.spacedBy(4.dp)) {
                 CameraMode.entries.forEach { mode -> Button({ cameraMode=mode; map?.let { applyCameraMode(it,mode,progress) } }, Modifier.weight(1f), contentPadding=androidx.compose.foundation.layout.PaddingValues(horizontal=2.dp)) { Text(mode.label,maxLines=1) } }
             }
             Text("Country / Region", Modifier.padding(top=10.dp), style=MaterialTheme.typography.titleSmall)
-            OutlinedTextField(query,{query=it},Modifier.fillMaxWidth().padding(top=4.dp),singleLine=true,placeholder={Text("Search country…")})
-            if (query.isNotBlank() && filtered.isNotEmpty()) {
+            OutlinedTextField(countryQuery,{countryQuery=it},Modifier.fillMaxWidth().padding(top=4.dp),singleLine=true,placeholder={Text("Search country…")})
+            if (countryQuery.isNotBlank() && filteredCountries.isNotEmpty()) {
                 Row(Modifier.fillMaxWidth().padding(top=4.dp), horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                    filtered.take(4).forEach { country -> Button({ selectedCountry=country; query=country.name; map?.style?.let { installLayers(it,country); updateVisuals(it,progress,country,highlightEnabled) } },Modifier.weight(1f),contentPadding=androidx.compose.foundation.layout.PaddingValues(horizontal=2.dp)) { Text(country.name,maxLines=1) } }
+                    filteredCountries.take(4).forEach { country -> Button({ selectedCountry=country; countryQuery=country.name; map?.style?.let { installLayers(it,country); updateVisuals(it,progress,country,highlightEnabled) } },Modifier.weight(1f),contentPadding=androidx.compose.foundation.layout.PaddingValues(horizontal=2.dp)) { Text(country.name,maxLines=1) } }
                 }
             }
             Row(Modifier.fillMaxWidth().padding(top=6.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.SpaceBetween) {

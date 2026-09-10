@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,9 +29,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -59,174 +61,97 @@ private const val MARKER_LAYER = "animated-marker-layer"
 private const val HIGHLIGHT_SOURCE = "country-highlight-source"
 private const val HIGHLIGHT_LAYER = "country-highlight-layer"
 
-private enum class CameraMode(val label: String) {
-    TOP_DOWN("Top-down"), BOUNCE("Bounce"), FLY_TO("Fly-to"), ORBIT("Orbit"), CINEMATIC("Cinematic")
-}
+private enum class CameraMode(val label: String) { TOP_DOWN("Top-down"), BOUNCE("Bounce"), FLY_TO("Fly-to"), ORBIT("Orbit"), CINEMATIC("Cinematic") }
 
-private val demoRoute = listOf(
-    LatLng(52.3676, 4.9041),
-    LatLng(52.2297, 5.1667),
-    LatLng(52.5200, 13.4050),
-    LatLng(52.2298, 21.0118),
-    LatLng(50.4501, 30.5234)
+private data class Country(val name: String, val center: LatLng, val polygon: List<LatLng>)
+
+private val countries = listOf(
+    Country("Netherlands", LatLng(52.13, 5.29), listOf(LatLng(53.55,3.35),LatLng(53.55,7.25),LatLng(51.30,7.25),LatLng(50.75,5.85),LatLng(51.45,3.35),LatLng(53.55,3.35))),
+    Country("Germany", LatLng(51.16, 10.45), listOf(LatLng(55.05,5.87),LatLng(55.05,15.05),LatLng(47.27,15.05),LatLng(47.27,5.87),LatLng(55.05,5.87))),
+    Country("Poland", LatLng(52.10, 19.40), listOf(LatLng(54.84,14.12),LatLng(54.84,24.15),LatLng(49.00,24.15),LatLng(49.00,14.12),LatLng(54.84,14.12))),
+    Country("Ukraine", LatLng(48.38, 31.17), listOf(LatLng(52.38,22.14),LatLng(52.38,40.23),LatLng(44.38,40.23),LatLng(44.38,22.14),LatLng(52.38,22.14)))
 )
 
-private val demoNetherlands = listOf(
-    LatLng(53.55, 3.35), LatLng(53.55, 7.25), LatLng(51.30, 7.25),
-    LatLng(50.75, 5.85), LatLng(51.45, 3.35), LatLng(53.55, 3.35)
-)
+private val demoRoute = listOf(LatLng(52.3676,4.9041),LatLng(52.5200,13.4050),LatLng(52.2298,21.0118),LatLng(50.4501,30.5234))
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        MapLibre.getInstance(this)
-        setContent { MaterialTheme { Surface(modifier = Modifier.fillMaxSize()) { MapStudioScreen() } } }
-    }
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); MapLibre.getInstance(this); setContent { MaterialTheme { Surface(Modifier.fillMaxSize()) { MapStudioScreen() } } } }
 }
 
 @Composable
 private fun MapStudioScreen() {
     val context = LocalContext.current
     val mapView = remember { MapView(context) }
-    var timelineProgress by remember { mutableFloatStateOf(0f) }
+    var progress by remember { mutableFloatStateOf(0f) }
     var cameraMode by remember { mutableStateOf(CameraMode.TOP_DOWN) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
-    var routeReady by remember { mutableStateOf(false) }
+    var ready by remember { mutableStateOf(false) }
+    var selectedCountry by remember { mutableStateOf(countries.first()) }
+    var query by remember { mutableStateOf("") }
     var highlightEnabled by remember { mutableStateOf(false) }
 
     DisposableEffect(mapView) {
-        mapView.onStart()
-        mapView.onResume()
-        mapView.getMapAsync { loadedMap ->
-            map = loadedMap
-            loadedMap.setStyle(Style.Builder().fromUri(MAP_STYLE)) { style ->
-                installRouteLayers(style)
-                installHighlightLayer(style)
-                routeReady = true
-                updateRouteVisuals(style, 0f)
-                updateHighlightVisuals(style, false, 0f)
-                loadedMap.moveCamera(CameraUpdateFactory.newCameraPosition(
-                    CameraPosition.Builder().target(demoRoute.first()).zoom(4.0).build()
-                ))
+        mapView.onStart(); mapView.onResume()
+        mapView.getMapAsync { loaded ->
+            map = loaded
+            loaded.setStyle(Style.Builder().fromUri(MAP_STYLE)) { style ->
+                installLayers(style, selectedCountry)
+                ready = true
+                updateVisuals(style, progress, selectedCountry, highlightEnabled)
+                loaded.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(demoRoute.first()).zoom(4.0).build()))
             }
         }
         onDispose { mapView.onPause(); mapView.onStop(); mapView.onDestroy() }
     }
 
-    val currentMs = (timelineProgress * DURATION_MS).toLong()
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().height(56.dp).background(androidx.compose.ui.graphics.Color(0xFF172A3A)).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text("Daily Flare 3D", color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.titleLarge)
-            Text(formatTime(currentMs) + " / 0:10", color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f))
+    val filtered = countries.filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
+    val currentMs = (progress * DURATION_MS).toLong()
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().height(56.dp).background(Color(0xFF172A3A)).padding(horizontal=16.dp), Alignment.CenterVertically, Arrangement.SpaceBetween) {
+            Text("Daily Flare 3D", color=Color.White, style=MaterialTheme.typography.titleLarge)
+            Text(formatTime(currentMs)+" / 0:10", color=Color.White.copy(alpha=.8f))
         }
-
-        Box(modifier = Modifier.weight(1f)) { AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize()) }
-
-        Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Camera", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.width(8.dp))
-                Text(cameraMode.label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(Modifier.weight(1f)) { AndroidView(factory={mapView}, modifier=Modifier.fillMaxSize()) }
+        Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
+            Text("Camera • ${cameraMode.label}", style=MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth().padding(top=6.dp), Arrangement.spacedBy(4.dp)) {
+                CameraMode.entries.forEach { mode -> Button({ cameraMode=mode; map?.let { applyCameraMode(it,mode,progress) } }, Modifier.weight(1f), contentPadding=androidx.compose.foundation.layout.PaddingValues(horizontal=2.dp)) { Text(mode.label,maxLines=1) } }
             }
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CameraMode.entries.forEach { mode ->
-                    Button(onClick = { cameraMode = mode; map?.let { applyCameraMode(it, mode, timelineProgress) } }, modifier = Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) {
-                        Text(mode.label, maxLines = 1)
-                    }
+            Text("Country / Region", Modifier.padding(top=10.dp), style=MaterialTheme.typography.titleSmall)
+            OutlinedTextField(query,{query=it},Modifier.fillMaxWidth().padding(top=4.dp),singleLine=true,placeholder={Text("Search country…")})
+            if (query.isNotBlank() && filtered.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth().padding(top=4.dp), Arrangement.spacedBy(4.dp)) {
+                    filtered.take(4).forEach { country -> Button({ selectedCountry=country; query=country.name; map?.style?.let { installLayers(it,country); updateVisuals(it,progress,country,highlightEnabled) } },Modifier.weight(1f),contentPadding=androidx.compose.foundation.layout.PaddingValues(horizontal=2.dp)) { Text(country.name,maxLines=1) } }
                 }
             }
-
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Highlight", style = MaterialTheme.typography.titleSmall)
-                    Text(if (highlightEnabled) "Netherlands • active" else "Netherlands • off", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Button(onClick = {
-                    highlightEnabled = !highlightEnabled
-                    map?.style?.let { if (routeReady) updateHighlightVisuals(it, highlightEnabled, timelineProgress) }
-                }) { Text(if (highlightEnabled) "Remove" else "Add") }
+            Row(Modifier.fillMaxWidth().padding(top=6.dp), Alignment.CenterVertically, Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) { Text(selectedCountry.name); Text(if(highlightEnabled) "Highlight active" else "Highlight off",color=MaterialTheme.colorScheme.onSurfaceVariant) }
+                Button({ highlightEnabled=!highlightEnabled; map?.style?.let { updateHighlight(it,selectedCountry,highlightEnabled,progress) } }) { Text(if(highlightEnabled) "Remove" else "Highlight") }
             }
-
-            Text("Timeline — Route • Highlight • Marker", modifier = Modifier.padding(top = 10.dp), style = MaterialTheme.typography.titleSmall)
-            Slider(value = timelineProgress, onValueChange = {
-                timelineProgress = it
-                map?.let { loadedMap ->
-                    loadedMap.style?.let { style ->
-                        if (routeReady) {
-                            updateRouteVisuals(style, it)
-                            updateHighlightVisuals(style, highlightEnabled, it)
-                        }
-                    }
-                    applyCameraMode(loadedMap, cameraMode, it)
-                }
-            }, modifier = Modifier.fillMaxWidth())
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("0:00", style = MaterialTheme.typography.labelSmall)
-                Text("60 FPS", style = MaterialTheme.typography.labelSmall)
-                Text("0:10", style = MaterialTheme.typography.labelSmall)
-            }
-
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("Map", "Layers", "Route", "Text", "Export").forEach { label ->
-                    Button(onClick = {}, modifier = Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 2.dp)) { Text(label, maxLines = 1) }
-                }
-            }
+            Text("Timeline • Route • Highlight • Marker", Modifier.padding(top=8.dp), style=MaterialTheme.typography.titleSmall)
+            Slider(progress,{ progress=it; map?.let { loaded -> loaded.style?.let { style -> if(ready) updateVisuals(style,it,selectedCountry,highlightEnabled) }; applyCameraMode(loaded,cameraMode,it) }},Modifier.fillMaxWidth())
+            Row(Modifier.fillMaxWidth(),Arrangement.SpaceBetween) { Text("0:00",style=MaterialTheme.typography.labelSmall); Text("60 FPS",style=MaterialTheme.typography.labelSmall); Text("0:10",style=MaterialTheme.typography.labelSmall) }
+            Row(Modifier.fillMaxWidth().padding(top=6.dp),Arrangement.spacedBy(4.dp)) { listOf("Map","Layers","Route","Text","Export").forEach { Button({},Modifier.weight(1f),contentPadding=androidx.compose.foundation.layout.PaddingValues(horizontal=2.dp)){Text(it,maxLines=1)} } }
         }
     }
 }
 
-private fun installRouteLayers(style: Style) {
-    if (style.getSource(ROUTE_SOURCE) == null) style.addSource(GeoJsonSource(ROUTE_SOURCE, emptyLineGeoJson()))
-    if (style.getSource(MARKER_SOURCE) == null) style.addSource(GeoJsonSource(MARKER_SOURCE, pointGeoJson(demoRoute.first())))
-    if (style.getLayer(ROUTE_LAYER) == null) style.addLayer(LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(lineColor(android.graphics.Color.parseColor("#E05A47")), lineWidth(5f), lineCap("round")))
-    if (style.getLayer(MARKER_LAYER) == null) style.addLayer(CircleLayer(MARKER_LAYER, MARKER_SOURCE).withProperties(circleRadius(7f), circleColor(android.graphics.Color.parseColor("#172A3A"))))
+private fun installLayers(style: Style, country: Country) {
+    if(style.getSource(ROUTE_SOURCE)==null) style.addSource(GeoJsonSource(ROUTE_SOURCE,lineGeoJson(listOf(demoRoute.first(),demoRoute.first()))))
+    if(style.getSource(MARKER_SOURCE)==null) style.addSource(GeoJsonSource(MARKER_SOURCE,pointGeoJson(demoRoute.first())))
+    if(style.getSource(HIGHLIGHT_SOURCE)==null) style.addSource(GeoJsonSource(HIGHLIGHT_SOURCE,polygonGeoJson(country.polygon))) else (style.getSource(HIGHLIGHT_SOURCE) as? GeoJsonSource)?.setGeoJson(polygonGeoJson(country.polygon))
+    if(style.getLayer(ROUTE_LAYER)==null) style.addLayer(LineLayer(ROUTE_LAYER,ROUTE_SOURCE).withProperties(lineColor(android.graphics.Color.parseColor("#E05A47")),lineWidth(5f),lineCap("round")))
+    if(style.getLayer(MARKER_LAYER)==null) style.addLayer(CircleLayer(MARKER_LAYER,MARKER_SOURCE).withProperties(circleRadius(7f),circleColor(android.graphics.Color.parseColor("#172A3A"))))
+    if(style.getLayer(HIGHLIGHT_LAYER)==null) style.addLayer(FillLayer(HIGHLIGHT_LAYER,HIGHLIGHT_SOURCE).withProperties(fillColor(android.graphics.Color.parseColor("#E05A47")),fillOpacity(0f)))
 }
 
-private fun installHighlightLayer(style: Style) {
-    if (style.getSource(HIGHLIGHT_SOURCE) == null) style.addSource(GeoJsonSource(HIGHLIGHT_SOURCE, polygonGeoJson(demoNetherlands)))
-    if (style.getLayer(HIGHLIGHT_LAYER) == null) style.addLayer(FillLayer(HIGHLIGHT_LAYER, HIGHLIGHT_SOURCE).withProperties(fillColor(android.graphics.Color.parseColor("#E05A47")), fillOpacity(0.0f)))
-}
-
-private fun updateRouteVisuals(style: Style, progress: Float) {
-    val p = progress.coerceIn(0f, 1f)
-    val scaled = p.toDouble() * (demoRoute.size - 1)
-    val segment = scaled.toInt().coerceAtMost(demoRoute.size - 2)
-    val local = scaled - segment
-    val current = interpolate(demoRoute[segment], demoRoute[segment + 1], local)
-    val visible = demoRoute.take(segment + 1).toMutableList()
-    if (visible.last() != current) visible.add(current)
-    (style.getSource(ROUTE_SOURCE) as? GeoJsonSource)?.setGeoJson(lineGeoJson(if (p == 0f) listOf(demoRoute.first()) else visible))
-    (style.getSource(MARKER_SOURCE) as? GeoJsonSource)?.setGeoJson(pointGeoJson(current))
-}
-
-private fun updateHighlightVisuals(style: Style, enabled: Boolean, progress: Float) {
-    val layer = style.getLayer(HIGHLIGHT_LAYER) as? FillLayer ?: return
-    val fade = if (!enabled) 0f else (progress * 2.0f).coerceIn(0f, 1f) * 0.42f
-    layer.setProperties(fillOpacity(fade))
-}
-
-private fun interpolate(a: LatLng, b: LatLng, t: Double): LatLng {
-    val clamped = t.coerceIn(0.0, 1.0)
-    return LatLng(a.latitude + (b.latitude - a.latitude) * clamped, a.longitude + (b.longitude - a.longitude) * clamped)
-}
-
-private fun lineGeoJson(points: List<LatLng>): String = "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"LineString\",\"coordinates\":[" + points.joinToString(",") { "[${it.longitude},${it.latitude}]" } + "]}}"
-private fun emptyLineGeoJson(): String = lineGeoJson(listOf(demoRoute.first(), demoRoute.first()))
-private fun pointGeoJson(point: LatLng): String = "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Point\",\"coordinates\":[${point.longitude},${point.latitude}]}}"
-private fun polygonGeoJson(points: List<LatLng>): String = "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[" + points.joinToString(",") { "[${it.longitude},${it.latitude}]" } + "]]}}"
-
-private fun applyCameraMode(map: MapLibreMap, mode: CameraMode, progress: Float) {
-    val current = map.cameraPosition
-    val p = progress.coerceIn(0f, 1f)
-    val bearing = when (mode) { CameraMode.ORBIT -> p * 360.0; CameraMode.CINEMATIC -> -18.0 + p * 36.0; else -> current.bearing }
-    val pitch = when (mode) { CameraMode.TOP_DOWN -> 0.0; CameraMode.BOUNCE -> 8.0 + kotlin.math.sin(p * Math.PI * 4.0) * 28.0; CameraMode.FLY_TO -> 20.0 + p * 35.0; CameraMode.ORBIT -> 35.0; CameraMode.CINEMATIC -> 25.0 + kotlin.math.sin(p * Math.PI) * 25.0 }
-    val zoom = when (mode) { CameraMode.TOP_DOWN -> current.zoom.coerceAtLeast(2.5); CameraMode.BOUNCE -> 4.0 + kotlin.math.sin(p * Math.PI * 4.0) * 0.35; CameraMode.FLY_TO -> 2.5 + p * 4.0; CameraMode.ORBIT -> 4.5; CameraMode.CINEMATIC -> 3.5 + p * 2.0 }
-    val target = CameraPosition.Builder(current).zoom(zoom).bearing(bearing).tilt(pitch).build()
-    map.easeCamera(CameraUpdateFactory.newCameraPosition(target), 180)
-}
-
-private fun formatTime(ms: Long): String { val seconds = ms / 1000; return "%d:%02d".format(seconds / 60, seconds % 60) }
+private fun updateVisuals(style: Style,p:Float,country:Country,enabled:Boolean){ updateRoute(style,p); updateHighlight(style,country,enabled,p) }
+private fun updateRoute(style:Style,p:Float){ val x=p.coerceIn(0f,1f).toDouble()*(demoRoute.size-1); val seg=x.toInt().coerceAtMost(demoRoute.size-2); val current=interpolate(demoRoute[seg],demoRoute[seg+1],x-seg); val visible=demoRoute.take(seg+1).toMutableList(); if(visible.last()!=current) visible.add(current); (style.getSource(ROUTE_SOURCE) as? GeoJsonSource)?.setGeoJson(lineGeoJson(if(p==0f) listOf(demoRoute.first()) else visible)); (style.getSource(MARKER_SOURCE) as? GeoJsonSource)?.setGeoJson(pointGeoJson(current)) }
+private fun updateHighlight(style:Style,country:Country,enabled:Boolean,p:Float){ (style.getSource(HIGHLIGHT_SOURCE) as? GeoJsonSource)?.setGeoJson(polygonGeoJson(country.polygon)); (style.getLayer(HIGHLIGHT_LAYER) as? FillLayer)?.setProperties(fillOpacity(if(enabled)(p*2f).coerceIn(0f,.42f) else 0f)) }
+private fun interpolate(a:LatLng,b:LatLng,t:Double)=LatLng(a.latitude+(b.latitude-a.latitude)*t.coerceIn(0.0,1.0),a.longitude+(b.longitude-a.longitude)*t.coerceIn(0.0,1.0))
+private fun lineGeoJson(points:List<LatLng>)="{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"LineString\",\"coordinates\":["+points.joinToString(","){"[${it.longitude},${it.latitude}]"}+"]}}"
+private fun polygonGeoJson(points:List<LatLng>)="{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[["+points.joinToString(","){"[${it.longitude},${it.latitude}]"}+"]]}}"
+private fun pointGeoJson(p:LatLng)="{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Point\",\"coordinates\":[${p.longitude},${p.latitude}]}}"
+private fun applyCameraMode(map:MapLibreMap,mode:CameraMode,p:Float){val c=map.cameraPosition;val x=p.coerceIn(0f,1f);val bearing=when(mode){CameraMode.ORBIT->x*360.0;CameraMode.CINEMATIC->-18.0+x*36.0;else->c.bearing};val tilt=when(mode){CameraMode.TOP_DOWN->0.0;CameraMode.BOUNCE->8.0+kotlin.math.sin(x*Math.PI*4)*28;CameraMode.FLY_TO->20.0+x*35;CameraMode.ORBIT->35.0;CameraMode.CINEMATIC->25.0+kotlin.math.sin(x*Math.PI)*25};val zoom=when(mode){CameraMode.TOP_DOWN->c.zoom.coerceAtLeast(2.5);CameraMode.BOUNCE->4.0+kotlin.math.sin(x*Math.PI*4)*.35;CameraMode.FLY_TO->2.5+x*4;CameraMode.ORBIT->4.5;CameraMode.CINEMATIC->3.5+x*2};map.easeCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(c).zoom(zoom).bearing(bearing).tilt(tilt).build()),180)}
+private fun formatTime(ms:Long):String { val s=ms/1000; return "%d:%02d".format(s/60,s%60) }

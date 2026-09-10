@@ -35,9 +35,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
-import org.maplibre.android.maps.MapboxMap
 
 private const val MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty"
 private const val DURATION_MS = 10_000L
@@ -62,7 +62,7 @@ private fun MapStudioScreen() {
     val mapView = remember { MapView(context) }
     var timelineProgress by remember { mutableFloatStateOf(0f) }
     var cameraMode by remember { mutableStateOf(CameraMode.TOP_DOWN) }
-    var map by remember { mutableStateOf<MapboxMap?>(null) }
+    var map by remember { mutableStateOf<MapLibreMap?>(null) }
 
     DisposableEffect(mapView) {
         mapView.onStart()
@@ -137,7 +137,7 @@ private fun MapStudioScreen() {
     }
 }
 
-private fun applyCameraMode(map: MapboxMap, mode: CameraMode, progress: Float) {
+private fun applyCameraMode(map: MapLibreMap, mode: CameraMode, progress: Float) {
     val current = map.cameraPosition
     val p = progress.coerceIn(0f, 1f)
     val bearing = when (mode) {

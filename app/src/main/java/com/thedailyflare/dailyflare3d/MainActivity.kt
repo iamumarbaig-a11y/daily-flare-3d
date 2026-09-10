@@ -50,7 +50,8 @@ import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.sources.GeoJsonSource
 
-private const val MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty"
+private const val LIGHT_STYLE = "https://tiles.openfreemap.org/styles/liberty"
+private const val DARK_STYLE = "https://tiles.openfreemap.org/styles/dark"
 private const val DURATION_MS = 10_000L
 private const val ROUTE_SOURCE = "animated-route-source"
 private const val ROUTE_LAYER = "animated-route-layer"
@@ -60,6 +61,7 @@ private const val HIGHLIGHT_SOURCE = "country-highlight-source"
 private const val HIGHLIGHT_LAYER = "country-highlight-layer"
 
 private enum class CameraMode(val label: String) { TOP_DOWN("Top-down"), BOUNCE("Bounce"), FLY_TO("Fly-to"), ORBIT("Orbit"), CINEMATIC("Cinematic") }
+private enum class MapStyleMode(val label: String, val uri: String) { LIGHT("Light", LIGHT_STYLE), DARK("Dark", DARK_STYLE) }
 private data class Country(val name: String, val center: LatLng, val polygon: List<LatLng>)
 private val countries = listOf(
     Country("Netherlands", LatLng(52.13, 5.29), listOf(LatLng(53.55,3.35),LatLng(53.55,7.25),LatLng(51.30,7.25),LatLng(50.75,5.85),LatLng(51.45,3.35),LatLng(53.55,3.35))),
@@ -79,22 +81,27 @@ private fun MapStudioScreen() {
     val mapView = remember { MapView(context) }
     var progress by remember { mutableFloatStateOf(0f) }
     var cameraMode by remember { mutableStateOf(CameraMode.TOP_DOWN) }
+    var mapStyle by remember { mutableStateOf(MapStyleMode.LIGHT) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var ready by remember { mutableStateOf(false) }
     var selectedCountry by remember { mutableStateOf(countries.first()) }
     var query by remember { mutableStateOf("") }
     var highlightEnabled by remember { mutableStateOf(false) }
 
+    fun loadMapStyle(loaded: MapLibreMap, mode: MapStyleMode) {
+        loaded.setStyle(Style.Builder().fromUri(mode.uri)) { style ->
+            installLayers(style, selectedCountry)
+            ready = true
+            updateVisuals(style, progress, selectedCountry, highlightEnabled)
+        }
+    }
+
     DisposableEffect(mapView) {
         mapView.onStart(); mapView.onResume()
         mapView.getMapAsync { loaded ->
             map = loaded
-            loaded.setStyle(Style.Builder().fromUri(MAP_STYLE)) { style ->
-                installLayers(style, selectedCountry)
-                ready = true
-                updateVisuals(style, progress, selectedCountry, highlightEnabled)
-                loaded.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(demoRoute.first()).zoom(4.0).build()))
-            }
+            loadMapStyle(loaded, mapStyle)
+            loaded.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(demoRoute.first()).zoom(4.0).build()))
         }
         onDispose { mapView.onPause(); mapView.onStop(); mapView.onDestroy() }
     }
@@ -108,7 +115,11 @@ private fun MapStudioScreen() {
         }
         Box(Modifier.weight(1f)) { AndroidView(factory={mapView}, modifier=Modifier.fillMaxSize()) }
         Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
-            Text("Camera • ${cameraMode.label}", style=MaterialTheme.typography.titleSmall)
+            Text("Map Style • ${mapStyle.label}", style=MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth().padding(top=6.dp), horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                MapStyleMode.entries.forEach { mode -> Button({ mapStyle=mode; map?.let { loadMapStyle(it,mode) } }, Modifier.weight(1f)) { Text(mode.label) } }
+            }
+            Text("Camera • ${cameraMode.label}", Modifier.padding(top=8.dp), style=MaterialTheme.typography.titleSmall)
             Row(Modifier.fillMaxWidth().padding(top=6.dp), horizontalArrangement=Arrangement.spacedBy(4.dp)) {
                 CameraMode.entries.forEach { mode -> Button({ cameraMode=mode; map?.let { applyCameraMode(it,mode,progress) } }, Modifier.weight(1f), contentPadding=androidx.compose.foundation.layout.PaddingValues(horizontal=2.dp)) { Text(mode.label,maxLines=1) } }
             }

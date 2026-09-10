@@ -186,7 +186,7 @@ private fun installRouteLayers(style: Style) {
     if (style.getLayer(ROUTE_LAYER) == null) {
         style.addLayer(
             LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
-                lineColor(Color.parseColor("#E05A47")),
+                lineColor(android.graphics.Color.parseColor("#E05A47")),
                 lineWidth(5f),
                 lineCap("round")
             )
@@ -196,7 +196,7 @@ private fun installRouteLayers(style: Style) {
         style.addLayer(
             CircleLayer(MARKER_LAYER, MARKER_SOURCE).withProperties(
                 circleRadius(7f),
-                circleColor(Color.parseColor("#172A3A"))
+                circleColor(android.graphics.Color.parseColor("#172A3A"))
             )
         )
     }
@@ -204,7 +204,7 @@ private fun installRouteLayers(style: Style) {
 
 private fun updateRouteVisuals(style: Style, progress: Float) {
     val p = progress.coerceIn(0f, 1f)
-    val scaled = p * (demoRoute.size - 1)
+    val scaled = p.toDouble() * (demoRoute.size - 1)
     val segment = scaled.toInt().coerceAtMost(demoRoute.size - 2)
     val local = scaled - segment
     val current = interpolate(demoRoute[segment], demoRoute[segment + 1], local)

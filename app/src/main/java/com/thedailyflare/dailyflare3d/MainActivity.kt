@@ -33,7 +33,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
+import org.maplibre.android.maps.MapboxMap
 
 private const val MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty"
 private const val DURATION_MS = 10_000L
@@ -58,11 +62,15 @@ private fun MapStudioScreen() {
     val mapView = remember { MapView(context) }
     var timelineProgress by remember { mutableFloatStateOf(0f) }
     var cameraMode by remember { mutableStateOf(CameraMode.TOP_DOWN) }
+    var map by remember { mutableStateOf<MapboxMap?>(null) }
 
     DisposableEffect(mapView) {
         mapView.onStart()
         mapView.onResume()
-        mapView.getMapAsync { map -> map.setStyle(MAP_STYLE) }
+        mapView.getMapAsync { loadedMap ->
+            map = loadedMap
+            loadedMap.setStyle(Style.Builder().fromUri(MAP_STYLE))
+        }
         onDispose {
             mapView.onPause()
             mapView.onStop()
@@ -101,7 +109,10 @@ private fun MapStudioScreen() {
             ) {
                 CameraMode.entries.forEach { mode ->
                     Button(
-                        onClick = { cameraMode = mode },
+                        onClick = {
+                            cameraMode = mode
+                            map?.let { applyCameraMode(it, mode, timelineProgress) }
+                        },
                         modifier = Modifier.weight(1f),
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)
                     ) { Text(mode.label, maxLines = 1) }
@@ -109,7 +120,14 @@ private fun MapStudioScreen() {
             }
 
             Text("Timeline — 10 seconds • 60 FPS", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
-            Slider(value = timelineProgress, onValueChange = { timelineProgress = it }, modifier = Modifier.fillMaxWidth())
+            Slider(
+                value = timelineProgress,
+                onValueChange = {
+                    timelineProgress = it
+                    map?.let { loadedMap -> applyCameraMode(loadedMap, cameraMode, it) }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("0:00", style = MaterialTheme.typography.labelSmall)
                 Text("Route • Highlight • Marker", style = MaterialTheme.typography.labelSmall)
@@ -117,6 +135,36 @@ private fun MapStudioScreen() {
             }
         }
     }
+}
+
+private fun applyCameraMode(map: MapboxMap, mode: CameraMode, progress: Float) {
+    val current = map.cameraPosition
+    val p = progress.coerceIn(0f, 1f)
+    val bearing = when (mode) {
+        CameraMode.ORBIT -> p * 360.0
+        CameraMode.CINEMATIC -> -18.0 + p * 36.0
+        else -> current.bearing
+    }
+    val pitch = when (mode) {
+        CameraMode.TOP_DOWN -> 0.0
+        CameraMode.BOUNCE -> 8.0 + kotlin.math.sin(p * Math.PI * 4.0) * 28.0
+        CameraMode.FLY_TO -> 20.0 + p * 35.0
+        CameraMode.ORBIT -> 35.0
+        CameraMode.CINEMATIC -> 25.0 + kotlin.math.sin(p * Math.PI) * 25.0
+    }
+    val zoom = when (mode) {
+        CameraMode.TOP_DOWN -> current.zoom.coerceAtLeast(2.5)
+        CameraMode.BOUNCE -> 4.0 + kotlin.math.sin(p * Math.PI * 4.0) * 0.35
+        CameraMode.FLY_TO -> 2.5 + p * 4.0
+        CameraMode.ORBIT -> 4.5
+        CameraMode.CINEMATIC -> 3.5 + p * 2.0
+    }
+    val target = CameraPosition.Builder(current)
+        .zoom(zoom)
+        .bearing(bearing)
+        .tilt(pitch)
+        .build()
+    map.easeCamera(CameraUpdateFactory.newCameraPosition(target), 180)
 }
 
 private fun formatTime(ms: Long): String {

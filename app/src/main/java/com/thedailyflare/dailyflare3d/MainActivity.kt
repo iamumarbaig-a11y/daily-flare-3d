@@ -1,7 +1,11 @@
 package com.thedailyflare.dailyflare3d
 
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +53,11 @@ import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
 import org.maplibre.android.style.layers.PropertyFactory.fillColor
 import org.maplibre.android.style.layers.PropertyFactory.fillOpacity
+import org.maplibre.android.style.layers.PropertyFactory.iconAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.iconIgnorePlacement
+import org.maplibre.android.style.layers.PropertyFactory.iconImage
+import org.maplibre.android.style.layers.PropertyFactory.iconOpacity
+import org.maplibre.android.style.layers.PropertyFactory.iconSize
 import org.maplibre.android.style.layers.PropertyFactory.lineCap
 import org.maplibre.android.style.layers.PropertyFactory.lineColor
 import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
@@ -57,6 +66,7 @@ import org.maplibre.android.style.layers.PropertyFactory.textColor
 import org.maplibre.android.style.layers.PropertyFactory.textField
 import org.maplibre.android.style.layers.PropertyFactory.textHaloColor
 import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
+import org.maplibre.android.style.layers.PropertyFactory.textOpacity
 import org.maplibre.android.style.layers.PropertyFactory.textSize
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -71,9 +81,13 @@ private const val HIGHLIGHT_SOURCE = "country-highlight-source"
 private const val HIGHLIGHT_LAYER = "country-highlight-layer"
 private const val TEXT_SOURCE = "editor-text-source"
 private const val TEXT_LAYER = "editor-text-layer"
+private const val PNG_SOURCE = "editor-png-source"
+private const val PNG_LAYER = "editor-png-layer"
+private const val PNG_IMAGE = "editor-png-image"
 
 private enum class CameraMode(val label: String) { TOP_DOWN("Top-down"), BOUNCE("Bounce"), FLY_TO("Fly-to"), ORBIT("Orbit"), CINEMATIC("Cinematic") }
-private enum class EditorTab(val label: String) { MAP("Map"), LAYERS("Layers"), ROUTE("Route"), TEXT("Text"), EXPORT("Export") }
+private enum class EditorTab(val label: String) { MAP("Map"), LAYERS("Layers"), ROUTE("Route"), PNG("PNG"), TEXT("Text"), EXPORT("Export") }
+private enum class PngMotion(val label: String) { STATIC("Static"), PATH("Move on path"), POP_OUT("Pop out") }
 private data class Country(val name: String, val center: LatLng, val polygon: List<LatLng>)
 
 private val countries = listOf(
@@ -112,12 +126,39 @@ private fun MapStudioScreen() {
     var editorText by remember { mutableStateOf("Daily Flare") }
     var textSizeValue by remember { mutableFloatStateOf(24f) }
     var selectedTab by remember { mutableStateOf(EditorTab.MAP) }
+    var pngUri by remember { mutableStateOf<Uri?>(null) }
+    var pngName by remember { mutableStateOf("No PNG selected") }
+    var pngVisible by remember { mutableStateOf(true) }
+    var pngMotion by remember { mutableStateOf(PngMotion.PATH) }
+    var pngSize by remember { mutableFloatStateOf(1f) }
+    var pngStart by remember { mutableFloatStateOf(0f) }
+    var pngDuration by remember { mutableFloatStateOf(1f) }
+
+    val pngPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            pngUri = uri
+            pngName = uri.lastPathSegment?.substringAfterLast('/') ?: "PNG image"
+            map?.style?.let { style ->
+                val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                if (bitmap != null) {
+                    if (style.getImage(PNG_IMAGE) != null) style.removeImage(PNG_IMAGE)
+                    style.addImage(PNG_IMAGE, bitmap)
+                    installPngLayer(style)
+                    updatePng(style, progress, selectedCountry, pngMotion, pngSize, pngVisible, pngStart, pngDuration)
+                }
+            }
+        }
+    }
 
     fun loadMapStyle(loaded: MapLibreMap) {
         loaded.setStyle(Style.Builder().fromUri(MAP_STYLE)) { style ->
             installLayers(style, selectedCountry, editorText)
+            installPngLayer(style)
+            pngUri?.let { uri ->
+                context.contentResolver.openInputStream(uri)?.use { input -> BitmapFactory.decodeStream(input) }?.let { bitmap -> style.addImage(PNG_IMAGE, bitmap) }
+            }
             ready = true
-            updateVisuals(style, progress, selectedCountry, highlightEnabled, routeVisible, markerVisible, textVisible, routeWidth, editorText, textSizeValue)
+            updateVisuals(style, progress, selectedCountry, highlightEnabled, routeVisible, markerVisible, textVisible, routeWidth, editorText, textSizeValue, pngMotion, pngSize, pngVisible, pngStart, pngDuration)
         }
     }
 
@@ -148,135 +189,110 @@ private fun MapStudioScreen() {
                     Text("Map", style=MaterialTheme.typography.titleMedium)
                     Text("Place / City Search", Modifier.padding(top=6.dp), style=MaterialTheme.typography.titleSmall)
                     OutlinedTextField(placeQuery,{placeQuery=it},Modifier.fillMaxWidth().padding(top=3.dp),singleLine=true,placeholder={Text("Search city or landmark…")})
-                    if (placeResults.isNotEmpty()) {
-                        Column(Modifier.fillMaxWidth().padding(top=3.dp)) {
-                            placeResults.take(3).forEach { place ->
-                                Button({ selectedPlace=place; placeQuery=place.name; map?.let { loaded -> loaded.easeCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(place.location).zoom(9.0).build()),650) } },Modifier.fillMaxWidth().padding(vertical=1.dp)) { Text("${place.name} • ${place.type}") }
-                            }
-                        }
-                    }
+                    if (placeResults.isNotEmpty()) Column(Modifier.fillMaxWidth().padding(top=3.dp)) { placeResults.take(3).forEach { place -> Button({ selectedPlace=place; placeQuery=place.name; map?.let { loaded -> loaded.easeCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(place.location).zoom(9.0).build()),650) } },Modifier.fillMaxWidth().padding(vertical=1.dp)){Text("${place.name} • ${place.type}")} } }
                     Text("Camera • ${cameraMode.label}", Modifier.padding(top=6.dp), style=MaterialTheme.typography.titleSmall)
-                    Row(Modifier.fillMaxWidth().padding(top=3.dp), horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                        CameraMode.entries.forEach { mode -> Button({ cameraMode=mode; map?.let { applyCameraMode(it,mode,progress) } }, Modifier.weight(1f), contentPadding=PaddingValues(horizontal=2.dp)) { Text(mode.label,maxLines=1) } }
-                    }
+                    Row(Modifier.fillMaxWidth().padding(top=3.dp), horizontalArrangement=Arrangement.spacedBy(4.dp)) { CameraMode.entries.forEach { mode -> Button({cameraMode=mode;map?.let{applyCameraMode(it,mode,progress)}},Modifier.weight(1f),contentPadding=PaddingValues(horizontal=2.dp)){Text(mode.label,maxLines=1)} } }
                     Text("Country / Region", Modifier.padding(top=7.dp), style=MaterialTheme.typography.titleSmall)
                     OutlinedTextField(countryQuery,{countryQuery=it},Modifier.fillMaxWidth().padding(top=3.dp),singleLine=true,placeholder={Text("Search country…")})
-                    if (countryQuery.isNotBlank() && filteredCountries.isNotEmpty()) {
-                        Row(Modifier.fillMaxWidth().padding(top=3.dp), horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                            filteredCountries.take(4).forEach { country -> Button({ selectedCountry=country; countryQuery=country.name; map?.style?.let { installLayers(it,country,editorText); updateVisuals(it,progress,country,highlightEnabled,routeVisible,markerVisible,textVisible,routeWidth,editorText,textSizeValue) } },Modifier.weight(1f),contentPadding=PaddingValues(horizontal=2.dp)) { Text(country.name,maxLines=1) } }
-                        }
-                    }
-                    Row(Modifier.fillMaxWidth().padding(top=4.dp), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.SpaceBetween) {
-                        Column(Modifier.weight(1f)) { Text(selectedCountry.name); Text(if(highlightEnabled) "Highlight active" else "Highlight off",color=MaterialTheme.colorScheme.onSurfaceVariant) }
-                        Button({ highlightEnabled=!highlightEnabled; map?.style?.let { updateHighlight(it,selectedCountry,highlightEnabled,progress) } }) { Text(if(highlightEnabled) "Remove" else "Highlight") }
-                    }
+                    if (countryQuery.isNotBlank() && filteredCountries.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(top=3.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)){filteredCountries.take(4).forEach{country->Button({selectedCountry=country;countryQuery=country.name;map?.style?.let{installLayers(it,country,editorText);updateVisuals(it,progress,country,highlightEnabled,routeVisible,markerVisible,textVisible,routeWidth,editorText,textSizeValue,pngMotion,pngSize,pngVisible,pngStart,pngDuration)}},Modifier.weight(1f),contentPadding=PaddingValues(horizontal=2.dp)){Text(country.name,maxLines=1)}}}
+                    Row(Modifier.fillMaxWidth().padding(top=4.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween){Column(Modifier.weight(1f)){Text(selectedCountry.name);Text(if(highlightEnabled)"Highlight active" else "Highlight off",color=MaterialTheme.colorScheme.onSurfaceVariant)};Button({highlightEnabled=!highlightEnabled;map?.style?.let{updateHighlight(it,selectedCountry,highlightEnabled,progress)}}){Text(if(highlightEnabled)"Remove" else "Highlight")}}
                 }
                 EditorTab.LAYERS -> {
-                    Text("Layers", style=MaterialTheme.typography.titleMedium)
-                    LayerButton("Route", routeVisible) { routeVisible=!routeVisible; map?.style?.let { updateLayerVisibility(it,routeVisible,markerVisible,textVisible) } }
-                    LayerButton("Marker", markerVisible) { markerVisible=!markerVisible; map?.style?.let { updateLayerVisibility(it,routeVisible,markerVisible,textVisible) } }
-                    LayerButton("Country highlight", highlightEnabled) { highlightEnabled=!highlightEnabled; map?.style?.let { updateHighlight(it,selectedCountry,highlightEnabled,progress) } }
-                    LayerButton("Text", textVisible) { textVisible=!textVisible; map?.style?.let { updateLayerVisibility(it,routeVisible,markerVisible,textVisible) } }
+                    Text("Layers",style=MaterialTheme.typography.titleMedium)
+                    LayerButton("Route",routeVisible){routeVisible=!routeVisible;map?.style?.let{updateLayerVisibility(it,routeVisible,markerVisible,textVisible,pngVisible)}}
+                    LayerButton("Marker",markerVisible){markerVisible=!markerVisible;map?.style?.let{updateLayerVisibility(it,routeVisible,markerVisible,textVisible,pngVisible)}}
+                    LayerButton("Country highlight",highlightEnabled){highlightEnabled=!highlightEnabled;map?.style?.let{updateHighlight(it,selectedCountry,highlightEnabled,progress)}}
+                    LayerButton("Text",textVisible){textVisible=!textVisible;map?.style?.let{updateLayerVisibility(it,routeVisible,markerVisible,textVisible,pngVisible)}}
+                    LayerButton("PNG image",pngVisible){pngVisible=!pngVisible;map?.style?.let{updatePng(it,progress,selectedCountry,pngMotion,pngSize,pngVisible,pngStart,pngDuration)}}
                 }
                 EditorTab.ROUTE -> {
-                    Text("Route", style=MaterialTheme.typography.titleMedium)
-                    Text("Animated route • ${demoRoute.size} key points", Modifier.padding(top=3.dp))
-                    Text("Width ${routeWidth.toInt()} px", Modifier.padding(top=5.dp))
-                    Slider(routeWidth,{ routeWidth=it; map?.style?.let { style -> (style.getLayer(ROUTE_LAYER) as? LineLayer)?.setProperties(lineWidth(it)) }},Modifier.fillMaxWidth(),valueRange=2f..12f)
+                    Text("Route",style=MaterialTheme.typography.titleMedium)
+                    Text("Animated route • ${demoRoute.size} key points",Modifier.padding(top=3.dp))
+                    Text("Width ${routeWidth.toInt()} px",Modifier.padding(top=5.dp))
+                    Slider(routeWidth,{routeWidth=it;map?.style?.let{style->(style.getLayer(ROUTE_LAYER) as? LineLayer)?.setProperties(lineWidth(it))}},Modifier.fillMaxWidth(),valueRange=2f..12f)
                     Text("Timeline controls the route reveal.",color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                EditorTab.PNG -> {
+                    Text("PNG Image",style=MaterialTheme.typography.titleMedium)
+                    Button({pngPicker.launch("image/png")},Modifier.fillMaxWidth().padding(top=4.dp)){Text("Add PNG")}
+                    Text(pngName,Modifier.padding(top=3.dp),color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Motion",Modifier.padding(top=6.dp),style=MaterialTheme.typography.titleSmall)
+                    Row(Modifier.fillMaxWidth().padding(top=3.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)){PngMotion.entries.forEach{motion->Button({pngMotion=motion;map?.style?.let{updatePng(it,progress,selectedCountry,pngMotion,pngSize,pngVisible,pngStart,pngDuration)}},Modifier.weight(1f),contentPadding=PaddingValues(horizontal=2.dp)){Text(motion.label,maxLines=1)}}}
+                    Text("Size ${"%.1f".format(pngSize)}x",Modifier.padding(top=5.dp))
+                    Slider(pngSize,{pngSize=it;map?.style?.let{updatePng(it,progress,selectedCountry,pngMotion,pngSize,pngVisible,pngStart,pngDuration)}},Modifier.fillMaxWidth(),valueRange=.25f..3f)
+                    Text("Start ${formatTime((pngStart*DURATION_MS).toLong())}",Modifier.padding(top=2.dp))
+                    Slider(pngStart,{pngStart=it.coerceAtMost(pngDuration);map?.style?.let{updatePng(it,progress,selectedCountry,pngMotion,pngSize,pngVisible,pngStart,pngDuration)}},Modifier.fillMaxWidth(),valueRange=0f..1f)
+                    Text("Duration ${"%.1f".format(pngDuration*10)}s",Modifier.padding(top=2.dp))
+                    Slider(pngDuration,{pngDuration=it.coerceAtLeast(pngStart);map?.style?.let{updatePng(it,progress,selectedCountry,pngMotion,pngSize,pngVisible,pngStart,pngDuration)}},Modifier.fillMaxWidth(),valueRange=.1f..1f)
+                    Text(when(pngMotion){PngMotion.STATIC->"PNG stays at its anchor.";PngMotion.PATH->"PNG follows the animated route.";PngMotion.POP_OUT->"PNG grows out from the selected country."},color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 EditorTab.TEXT -> {
-                    Text("Text Layer", style=MaterialTheme.typography.titleMedium)
-                    OutlinedTextField(editorText,{editorText=it; map?.style?.let { style -> updateTextLayer(style,editorText,textSizeValue,textVisible) }},Modifier.fillMaxWidth().padding(top=4.dp),singleLine=true,placeholder={Text("Enter map text…")})
-                    Text("Size ${textSizeValue.toInt()}", Modifier.padding(top=4.dp))
-                    Slider(textSizeValue,{ textSizeValue=it; map?.style?.let { style -> updateTextLayer(style,editorText,textSizeValue,textVisible) }},Modifier.fillMaxWidth(),valueRange=12f..64f)
-                    Text("Text is anchored to the selected place or country.",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Text Layer",style=MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(editorText,{editorText=it;map?.style?.let{style->updateTextLayer(style,editorText,textSizeValue,textVisible)}},Modifier.fillMaxWidth().padding(top=4.dp),singleLine=true,placeholder={Text("Enter map text…")})
+                    Text("Size ${textSizeValue.toInt()}",Modifier.padding(top=4.dp));Slider(textSizeValue,{textSizeValue=it;map?.style?.let{style->updateTextLayer(style,editorText,textSizeValue,textVisible)}},Modifier.fillMaxWidth(),valueRange=12f..64f)
                 }
                 EditorTab.EXPORT -> {
-                    Text("Export", style=MaterialTheme.typography.titleMedium)
-                    Text("Render pipeline", Modifier.padding(top=5.dp), style=MaterialTheme.typography.titleSmall)
-                    Text("60 FPS timeline is ready. MP4 rendering is the next engine milestone.", Modifier.padding(top=2.dp))
-                    Spacer(Modifier.height(4.dp))
-                    Button({}, enabled=false, modifier=Modifier.fillMaxWidth()) { Text("Export MP4 — coming next") }
+                    Text("Export",style=MaterialTheme.typography.titleMedium)
+                    Text("Render pipeline",Modifier.padding(top=5.dp),style=MaterialTheme.typography.titleSmall)
+                    Text("60 FPS timeline is ready. MP4 rendering is the next engine milestone.",Modifier.padding(top=2.dp))
+                    Spacer(Modifier.height(4.dp));Button({},enabled=false,modifier=Modifier.fillMaxWidth()){Text("Export MP4 — coming next")}
                 }
             }
-
-            Text("Timeline • Route • Highlight • Marker", Modifier.padding(top=7.dp), style=MaterialTheme.typography.titleSmall)
-            Slider(progress,{ progress=it; map?.let { loaded -> loaded.style?.let { style -> if(ready) updateVisuals(style,it,selectedCountry,highlightEnabled,routeVisible,markerVisible,textVisible,routeWidth,editorText,textSizeValue) }; applyCameraMode(loaded,cameraMode,it) }},Modifier.fillMaxWidth())
-            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween) { Text("0:00",style=MaterialTheme.typography.labelSmall); Text("60 FPS",style=MaterialTheme.typography.labelSmall); Text("0:10",style=MaterialTheme.typography.labelSmall) }
-            Row(Modifier.fillMaxWidth().padding(top=5.dp), horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                EditorTab.entries.forEach { tab -> Button({selectedTab=tab},Modifier.weight(1f),contentPadding=PaddingValues(horizontal=2.dp)){Text(tab.label,maxLines=1)} }
-            }
+            Text("Timeline • Route • Highlight • PNG",Modifier.padding(top=7.dp),style=MaterialTheme.typography.titleSmall)
+            Slider(progress,{progress=it;map?.let{loaded->loaded.style?.let{style->if(ready)updateVisuals(style,it,selectedCountry,highlightEnabled,routeVisible,markerVisible,textVisible,routeWidth,editorText,textSizeValue,pngMotion,pngSize,pngVisible,pngStart,pngDuration)};applyCameraMode(loaded,cameraMode,it)}},Modifier.fillMaxWidth())
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("0:00",style=MaterialTheme.typography.labelSmall);Text("60 FPS",style=MaterialTheme.typography.labelSmall);Text("0:10",style=MaterialTheme.typography.labelSmall)}
+            Row(Modifier.fillMaxWidth().padding(top=5.dp),horizontalArrangement=Arrangement.spacedBy(3.dp)){EditorTab.entries.forEach{tab->Button({selectedTab=tab},Modifier.weight(1f),contentPadding=PaddingValues(horizontal=1.dp)){Text(tab.label,maxLines=1)}}}
         }
     }
 }
 
-@Composable
-private fun LayerButton(name:String, enabled:Boolean, onClick:()->Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical=2.dp),verticalAlignment=Alignment.CenterVertically) {
-        Button(onClick,Modifier.weight(1f)){Text(name)}
-        Spacer(Modifier.width(8.dp))
-        Text(if(enabled) "ON" else "OFF",color=if(enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
+@Composable private fun LayerButton(name:String,enabled:Boolean,onClick:()->Unit){Row(Modifier.fillMaxWidth().padding(vertical=2.dp),verticalAlignment=Alignment.CenterVertically){Button(onClick,Modifier.weight(1f)){Text(name)};Spacer(Modifier.width(8.dp));Text(if(enabled)"ON" else "OFF",color=if(enabled)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)}}
 
-private fun installLayers(style: Style, country: Country, text: String) {
-    if(style.getSource(ROUTE_SOURCE)==null) style.addSource(GeoJsonSource(ROUTE_SOURCE,lineGeoJson(listOf(demoRoute.first(),demoRoute.first()))))
-    if(style.getSource(MARKER_SOURCE)==null) style.addSource(GeoJsonSource(MARKER_SOURCE,pointGeoJson(demoRoute.first())))
-    if(style.getSource(HIGHLIGHT_SOURCE)==null) style.addSource(GeoJsonSource(HIGHLIGHT_SOURCE,polygonGeoJson(country.polygon))) else (style.getSource(HIGHLIGHT_SOURCE) as? GeoJsonSource)?.setGeoJson(polygonGeoJson(country.polygon))
-    if(style.getSource(TEXT_SOURCE)==null) style.addSource(GeoJsonSource(TEXT_SOURCE,pointGeoJson(country.center)))
-    if(style.getLayer(ROUTE_LAYER)==null) style.addLayer(LineLayer(ROUTE_LAYER,ROUTE_SOURCE).withProperties(lineColor(android.graphics.Color.parseColor("#E05A47")),lineWidth(5f),lineCap("round"),lineOpacity(1f)))
-    if(style.getLayer(MARKER_LAYER)==null) style.addLayer(CircleLayer(MARKER_LAYER,MARKER_SOURCE).withProperties(circleRadius(7f),circleColor(android.graphics.Color.parseColor("#172A3A")),circleOpacity(1f)))
-    if(style.getLayer(HIGHLIGHT_LAYER)==null) style.addLayer(FillLayer(HIGHLIGHT_LAYER,HIGHLIGHT_SOURCE).withProperties(fillColor(android.graphics.Color.parseColor("#E05A47")),fillOpacity(0f)))
-    if(style.getLayer(TEXT_LAYER)==null) style.addLayer(SymbolLayer(TEXT_LAYER,TEXT_SOURCE).withProperties(textField(text),textSize(24f),textColor(android.graphics.Color.parseColor("#172A3A")),textHaloColor(android.graphics.Color.WHITE),textHaloWidth(2f)))
+private fun installLayers(style:Style,country:Country,text:String){
+    if(style.getSource(ROUTE_SOURCE)==null)style.addSource(GeoJsonSource(ROUTE_SOURCE,lineGeoJson(listOf(demoRoute.first(),demoRoute.first()))))
+    if(style.getSource(MARKER_SOURCE)==null)style.addSource(GeoJsonSource(MARKER_SOURCE,pointGeoJson(demoRoute.first())))
+    if(style.getSource(HIGHLIGHT_SOURCE)==null)style.addSource(GeoJsonSource(HIGHLIGHT_SOURCE,polygonGeoJson(country.polygon)) else (style.getSource(HIGHLIGHT_SOURCE) as? GeoJsonSource)?.setGeoJson(polygonGeoJson(country.polygon))
+    if(style.getSource(TEXT_SOURCE)==null)style.addSource(GeoJsonSource(TEXT_SOURCE,pointGeoJson(country.center)))
+    if(style.getLayer(ROUTE_LAYER)==null)style.addLayer(LineLayer(ROUTE_LAYER,ROUTE_SOURCE).withProperties(lineColor(android.graphics.Color.parseColor("#E05A47")),lineWidth(5f),lineCap("round"),lineOpacity(1f)))
+    if(style.getLayer(MARKER_LAYER)==null)style.addLayer(CircleLayer(MARKER_LAYER,MARKER_SOURCE).withProperties(circleRadius(7f),circleColor(android.graphics.Color.parseColor("#172A3A")),circleOpacity(1f)))
+    if(style.getLayer(HIGHLIGHT_LAYER)==null)style.addLayer(FillLayer(HIGHLIGHT_LAYER,HIGHLIGHT_SOURCE).withProperties(fillColor(android.graphics.Color.parseColor("#E05A47")),fillOpacity(0f)))
+    if(style.getLayer(TEXT_LAYER)==null)style.addLayer(SymbolLayer(TEXT_LAYER,TEXT_SOURCE).withProperties(textField(text),textSize(24f),textColor(android.graphics.Color.parseColor("#172A3A")),textHaloColor(android.graphics.Color.WHITE),textHaloWidth(2f)))
     updateTextLayer(style,text,24f,true)
 }
 
-private fun updateVisuals(style:Style,p:Float,country:Country,highlight:Boolean,routeVisible:Boolean,markerVisible:Boolean,textVisible:Boolean,routeWidth:Float,text:String,textSize:Float){
-    updateRoute(style,p,routeWidth)
-    updateHighlight(style,country,highlight,p)
-    updateLayerVisibility(style,routeVisible,markerVisible,textVisible)
-    updateTextLayer(style,text,textSize,textVisible)
+private fun installPngLayer(style:Style){
+    if(style.getSource(PNG_SOURCE)==null)style.addSource(GeoJsonSource(PNG_SOURCE,pointGeoJson(demoRoute.first())))
+    if(style.getLayer(PNG_LAYER)==null)style.addLayer(SymbolLayer(PNG_LAYER,PNG_SOURCE).withProperties(iconImage(PNG_IMAGE),iconAllowOverlap(true),iconIgnorePlacement(true),iconSize(1f),iconOpacity(0f)))
 }
 
-private fun updateRoute(style:Style,p:Float,width:Float){
-    val x=p.coerceIn(0f,1f).toDouble()*(demoRoute.size-1)
-    val seg=x.toInt().coerceAtMost(demoRoute.size-2)
-    val current=interpolate(demoRoute[seg],demoRoute[seg+1],x-seg)
-    val visible=demoRoute.take(seg+1).toMutableList()
-    if(visible.last()!=current) visible.add(current)
-    (style.getSource(ROUTE_SOURCE) as? GeoJsonSource)?.setGeoJson(lineGeoJson(if(p==0f) listOf(demoRoute.first()) else visible))
-    (style.getSource(MARKER_SOURCE) as? GeoJsonSource)?.setGeoJson(pointGeoJson(current))
-    (style.getLayer(ROUTE_LAYER) as? LineLayer)?.setProperties(lineWidth(width))
+private fun updateVisuals(style:Style,p:Float,country:Country,highlight:Boolean,routeVisible:Boolean,markerVisible:Boolean,textVisible:Boolean,routeWidth:Float,text:String,textSize:Float,pngMotion:PngMotion,pngSize:Float,pngVisible:Boolean,pngStart:Float,pngDuration:Float){updateRoute(style,p,routeWidth);updateHighlight(style,country,highlight,p);updateLayerVisibility(style,routeVisible,markerVisible,textVisible,pngVisible);updateTextLayer(style,text,textSize,textVisible);updatePng(style,p,country,pngMotion,pngSize,pngVisible,pngStart,pngDuration)}
+
+private fun updateRoute(style:Style,p:Float,width:Float){val x=p.coerceIn(0f,1f).toDouble()*(demoRoute.size-1);val seg=x.toInt().coerceAtMost(demoRoute.size-2);val current=interpolate(demoRoute[seg],demoRoute[seg+1],x-seg);val visible=demoRoute.take(seg+1).toMutableList();if(visible.last()!=current)visible.add(current);(style.getSource(ROUTE_SOURCE) as? GeoJsonSource)?.setGeoJson(lineGeoJson(if(p==0f)listOf(demoRoute.first()) else visible));(style.getSource(MARKER_SOURCE) as? GeoJsonSource)?.setGeoJson(pointGeoJson(current));(style.getLayer(ROUTE_LAYER) as? LineLayer)?.setProperties(lineWidth(width))}
+
+private fun updatePng(style:Style,p:Float,country:Country,motion:PngMotion,size:Float,visible:Boolean,start:Float,duration:Float){
+    val source=style.getSource(PNG_SOURCE) as? GeoJsonSource ?: return
+    val layer=style.getLayer(PNG_LAYER) as? SymbolLayer ?: return
+    if(style.getImage(PNG_IMAGE)==null){layer.setProperties(iconOpacity(0f));return}
+    val local=((p-start)/duration.coerceAtLeast(.01f)).coerceIn(0f,1f)
+    val position=when(motion){
+        PngMotion.STATIC->country.center
+        PngMotion.PATH->interpolateRoute(local)
+        PngMotion.POP_OUT->interpolate(country.center,LatLng(country.center.latitude+3.0,country.center.longitude+2.5),easeOutBack(local))
+    }
+    val opacity=if(!visible || p<start)0f else when(motion){PngMotion.POP_OUT->local.coerceIn(0f,1f);else->1f}
+    source.setGeoJson(pointGeoJson(position))
+    layer.setProperties(iconImage(PNG_IMAGE),iconSize(if(motion==PngMotion.POP_OUT)size*(.25f+.75f*easeOutBack(local)) else size),iconOpacity(opacity),iconAllowOverlap(true),iconIgnorePlacement(true))
 }
 
-private fun updateHighlight(style:Style,country:Country,enabled:Boolean,p:Float){
-    (style.getSource(HIGHLIGHT_SOURCE) as? GeoJsonSource)?.setGeoJson(polygonGeoJson(country.polygon))
-    (style.getLayer(HIGHLIGHT_LAYER) as? FillLayer)?.setProperties(fillOpacity(if(enabled)(p*2f).coerceIn(0f,.42f) else 0f))
-}
+private fun interpolateRoute(t:Float):LatLng{val x=t.coerceIn(0f,1f).toDouble()*(demoRoute.size-1);val seg=x.toInt().coerceAtMost(demoRoute.size-2);return interpolate(demoRoute[seg],demoRoute[seg+1],x-seg)}
+private fun easeOutBack(t:Float):Float{val c1=1.70158f;val c3=c1+1f;val x=t-1f;return 1f+c3*x*x*x+c1*x*x}
 
-private fun updateLayerVisibility(style:Style,route:Boolean,marker:Boolean,text:Boolean){
-    (style.getLayer(ROUTE_LAYER) as? LineLayer)?.setProperties(lineOpacity(if(route)1f else 0f))
-    (style.getLayer(MARKER_LAYER) as? CircleLayer)?.setProperties(circleOpacity(if(marker)1f else 0f))
-    (style.getLayer(TEXT_LAYER) as? SymbolLayer)?.setProperties(org.maplibre.android.style.layers.PropertyFactory.textOpacity(if(text)1f else 0f))
-}
-
-private fun updateTextLayer(style:Style,text:String,size:Float,visible:Boolean){
-    val source=style.getSource(TEXT_SOURCE) as? GeoJsonSource ?: return
-    source.setGeoJson(pointGeoJson(demoRoute.last()))
-    (style.getLayer(TEXT_LAYER) as? SymbolLayer)?.setProperties(
-        textField(text.ifBlank { "Daily Flare" }),
-        textSize(size),
-        textColor(android.graphics.Color.parseColor("#172A3A")),
-        textHaloColor(android.graphics.Color.WHITE),
-        textHaloWidth(2f),
-        org.maplibre.android.style.layers.PropertyFactory.textOpacity(if(visible)1f else 0f)
-    )
-}
-
+private fun updateHighlight(style:Style,country:Country,enabled:Boolean,p:Float){(style.getSource(HIGHLIGHT_SOURCE) as? GeoJsonSource)?.setGeoJson(polygonGeoJson(country.polygon));(style.getLayer(HIGHLIGHT_LAYER) as? FillLayer)?.setProperties(fillOpacity(if(enabled)(p*2f).coerceIn(0f,.42f) else 0f))}
+private fun updateLayerVisibility(style:Style,route:Boolean,marker:Boolean,text:Boolean,png:Boolean){(style.getLayer(ROUTE_LAYER) as? LineLayer)?.setProperties(lineOpacity(if(route)1f else 0f));(style.getLayer(MARKER_LAYER) as? CircleLayer)?.setProperties(circleOpacity(if(marker)1f else 0f));(style.getLayer(TEXT_LAYER) as? SymbolLayer)?.setProperties(textOpacity(if(text)1f else 0f));(style.getLayer(PNG_LAYER) as? SymbolLayer)?.setProperties(iconOpacity(if(png)1f else 0f))}
+private fun updateTextLayer(style:Style,text:String,size:Float,visible:Boolean){val source=style.getSource(TEXT_SOURCE) as? GeoJsonSource ?: return;source.setGeoJson(pointGeoJson(demoRoute.last()));(style.getLayer(TEXT_LAYER) as? SymbolLayer)?.setProperties(textField(text.ifBlank{"Daily Flare"}),textSize(size),textColor(android.graphics.Color.parseColor("#172A3A")),textHaloColor(android.graphics.Color.WHITE),textHaloWidth(2f),textOpacity(if(visible)1f else 0f))}
 private fun interpolate(a:LatLng,b:LatLng,t:Double)=LatLng(a.latitude+(b.latitude-a.latitude)*t.coerceIn(0.0,1.0),a.longitude+(b.longitude-a.longitude)*t.coerceIn(0.0,1.0))
 private fun lineGeoJson(points:List<LatLng>)="{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"LineString\",\"coordinates\":["+points.joinToString(","){"[${it.longitude},${it.latitude}]"}+"]}}"
 private fun polygonGeoJson(points:List<LatLng>)="{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[["+points.joinToString(","){"[${it.longitude},${it.latitude}]"}+"]]}}"
 private fun pointGeoJson(p:LatLng)="{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Point\",\"coordinates\":[${p.longitude},${p.latitude}]}}"
 private fun applyCameraMode(map:MapLibreMap,mode:CameraMode,p:Float){val c=map.cameraPosition;val x=p.coerceIn(0f,1f);val bearing=when(mode){CameraMode.ORBIT->x*360.0;CameraMode.CINEMATIC->-18.0+x*36.0;else->c.bearing};val tilt=when(mode){CameraMode.TOP_DOWN->0.0;CameraMode.BOUNCE->8.0+kotlin.math.sin(x*Math.PI*4)*28;CameraMode.FLY_TO->20.0+x*35;CameraMode.ORBIT->35.0;CameraMode.CINEMATIC->25.0+kotlin.math.sin(x*Math.PI)*25};val zoom=when(mode){CameraMode.TOP_DOWN->c.zoom.coerceAtLeast(2.5);CameraMode.BOUNCE->4.0+kotlin.math.sin(x*Math.PI*4)*.35;CameraMode.FLY_TO->2.5+x*4;CameraMode.ORBIT->4.5;CameraMode.CINEMATIC->3.5+x*2};map.easeCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder(c).zoom(zoom).bearing(bearing).tilt(tilt).build()),180)}
-private fun formatTime(ms:Long):String { val s=ms/1000; return "%d:%02d".format(s/60,s%60) }
+private fun formatTime(ms:Long):String{val s=ms/1000;return "%d:%02d".format(s/60,s%60)}

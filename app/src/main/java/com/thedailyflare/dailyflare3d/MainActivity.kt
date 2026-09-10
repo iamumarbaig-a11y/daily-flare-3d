@@ -8,15 +8,24 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,34 +36,33 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.maps.MapView
 
 private const val MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty"
+private const val DURATION_MS = 10_000L
+
+private enum class CameraMode(val label: String) {
+    TOP_DOWN("Top-down"), BOUNCE("Bounce"), FLY_TO("Fly-to"), ORBIT("Orbit"), CINEMATIC("Cinematic")
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         MapLibre.getInstance(this)
-
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    MapStudioScreen()
-                }
-            }
+            MaterialTheme { Surface(modifier = Modifier.fillMaxSize()) { MapStudioScreen() } }
         }
     }
 }
 
-@androidx.compose.runtime.Composable
+@Composable
 private fun MapStudioScreen() {
     val context = LocalContext.current
     val mapView = remember { MapView(context) }
+    var timelineProgress by remember { mutableFloatStateOf(0f) }
+    var cameraMode by remember { mutableStateOf(CameraMode.TOP_DOWN) }
 
     DisposableEffect(mapView) {
         mapView.onStart()
         mapView.onResume()
-        mapView.getMapAsync { map ->
-            map.setStyle(MAP_STYLE)
-        }
-
+        mapView.getMapAsync { map -> map.setStyle(MAP_STYLE) }
         onDispose {
             mapView.onPause()
             mapView.onStop()
@@ -62,51 +70,56 @@ private fun MapStudioScreen() {
         }
     }
 
+    val currentMs = (timelineProgress * DURATION_MS).toLong()
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .background(Color(0xFF172A3A))
-                .padding(horizontal = 16.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp).background(Color(0xFF172A3A)).padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = "Daily Flare 3D",
-                color = Color.White,
-                style = MaterialTheme.typography.titleLarge
-            )
-            Text(
-                text = "0:00 / 0:10",
-                color = Color.White.copy(alpha = 0.8f),
-                style = MaterialTheme.typography.labelLarge
-            )
+            Text("Daily Flare 3D", color = Color.White, style = MaterialTheme.typography.titleLarge)
+            Text(formatTime(currentMs) + " / 0:10", color = Color.White.copy(alpha = 0.8f))
         }
 
         Box(modifier = Modifier.weight(1f)) {
-            AndroidView(
-                factory = { mapView },
-                modifier = Modifier.fillMaxSize()
-            )
+            AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         }
 
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(12.dp)
+            modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            Text(
-                text = "Timeline — 10 seconds",
-                style = MaterialTheme.typography.titleSmall
-            )
-            Text(
-                text = "Camera • Route • Highlight • Marker",
-                modifier = Modifier.padding(top = 4.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Camera", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.width(8.dp))
+                Text(cameraMode.label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                CameraMode.entries.forEach { mode ->
+                    Button(
+                        onClick = { cameraMode = mode },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)
+                    ) { Text(mode.label, maxLines = 1) }
+                }
+            }
+
+            Text("Timeline — 10 seconds • 60 FPS", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.titleSmall)
+            Slider(value = timelineProgress, onValueChange = { timelineProgress = it }, modifier = Modifier.fillMaxWidth())
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("0:00", style = MaterialTheme.typography.labelSmall)
+                Text("Route • Highlight • Marker", style = MaterialTheme.typography.labelSmall)
+                Text("0:10", style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
+}
+
+private fun formatTime(ms: Long): String {
+    val seconds = ms / 1000
+    return "%d:%02d".format(seconds / 60, seconds % 60)
 }
